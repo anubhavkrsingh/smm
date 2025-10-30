@@ -90,7 +90,13 @@ function Dashboard() {
         throw new Error(errorData.error || "Failed to post to Facebook");
       }
 
-      alert("Post successfully published to Facebook!");
+      //alert("Post successfully published to Facebook!");
+      const result = await response.json();
+      alert(
+        `Saved to SQL as ${result?.dbRecord?.status || "POSTED"} at ${new Date(
+          result?.dbRecord?.scheduledAt || Date.now()
+        ).toLocaleString()}`
+      );
       setGeneratedContents([]);
       setSelectedContent(null);
     } catch (err) {
@@ -247,9 +253,8 @@ function Dashboard() {
               {generatedContents.map((content, index) => (
                 <div
                   key={index}
-                  className={`p-4 bg-gray-800 rounded-lg cursor-pointer border ${
-                    selectedContent === content ? "border-blue-500" : "border-gray-700"
-                  }`}
+                  className={`p-4 bg-gray-800 rounded-lg cursor-pointer border ${selectedContent === content ? "border-blue-500" : "border-gray-700"
+                    }`}
                   onClick={() => setSelectedContent(content)}
                 >
                   <p className="mb-2 whitespace-pre-wrap">{content.text}</p>
