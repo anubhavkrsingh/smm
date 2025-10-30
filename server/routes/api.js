@@ -41,9 +41,27 @@ router.post('/schedule-post', async (req, res) => {
       return res.status(400).json({ error: 'scheduleTime is required for scheduling.' });
     }
 
-    const dt = new Date(scheduleTime);
+    // ---- robust parsing for "YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm", or epoch millis ----
+    let normalized = scheduleTime;
+    if (typeof normalized === 'string') {
+      normalized = normalized.trim();
+      if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(normalized)) {
+        normalized = normalized.replace(' ', 'T'); // support "YYYY-MM-DD HH:mm"
+      }
+    } else if (typeof normalized === 'number') {
+      // allow epoch ms as number
+      normalized = Number(normalized);
+    }
+
+    const dt = new Date(normalized);
     if (isNaN(dt.getTime())) {
-      return res.status(400).json({ error: 'Invalid scheduleTime.' });
+      return res.status(400).json({ error: `Invalid scheduleTime: "${scheduleTime}". Use "YYYY-MM-DDTHH:mm" or epoch milliseconds.` });
+    }
+
+    // Facebook requires ~10 minutes lead time
+    const leadMs = dt.getTime() - Date.now();
+    if (leadMs < 10 * 60 * 1000) {
+      return res.status(400).json({ error: 'scheduleTime must be at least 10 minutes in the future for Facebook scheduling.' });
     }
 
     // Build caption and normalize
@@ -57,7 +75,6 @@ router.post('/schedule-post', async (req, res) => {
       scheduledAt: dt,
     });
 
-
     const saved = await saveScheduledPost({
       imageUrl:  null, //content.mediaUrl || null,
       caption: caption || null,
@@ -67,7 +84,8 @@ router.post('/schedule-post', async (req, res) => {
       scheduledAt: dt,
       fbPostId: fbResp.id || null,
     });
-return res.json({
+
+    return res.json({
       message: 'Scheduled on Facebook and saved to SQL.',
       facebook: { id: fbResp.id },
       dbRecord: {
