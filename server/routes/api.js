@@ -4,6 +4,9 @@ const router = express.Router();
 
 const { generateContent } = require('../services/genAI'); // already in your code
 const { saveScheduledPost , saveImmediatePost} = require('../services/scheduler'); // ⬅️ add this import
+const { postNowSmart, scheduleSmart } = require('../services/facebook'); // to post with image use this 
+//const { postTextNow, scheduleText } = require('../services/facebook');
+
 
 router.post('/generate-content', async (req, res) => {
   const { prompt, platform } = req.body;
@@ -31,46 +34,71 @@ router.post('/schedule-post', async (req, res) => {
     if (!accessToken || !pageId) {
       return res.status(400).json({ error: 'Page access token and Page ID are required.' });
     }
-    if (!content || (!content.text && !content.mediaUrl)) {
+    if (!content || (!content.text )) { //&& !content.mediaUrl
       return res.status(400).json({ error: 'Content with text or mediaUrl is required.' });
+    }
+    if (!scheduleTime) {
+      return res.status(400).json({ error: 'scheduleTime is required for scheduling.' });
+    }
+
+    const dt = new Date(scheduleTime);
+    if (isNaN(dt.getTime())) {
+      return res.status(400).json({ error: 'Invalid scheduleTime.' });
     }
 
     // Build caption and normalize
     const caption = [content.text, content.hashtags].filter(Boolean).join('\n\n');
 
-    let scheduledAt = null;
-    if (scheduleTime) {
-      const dt = new Date(scheduleTime); // accepts `YYYY-MM-DDTHH:mm` from <input type="datetime-local">
-      if (isNaN(dt.getTime())) {
-        return res.status(400).json({ error: 'Invalid scheduleTime.' });
-      }
-      scheduledAt = dt;
-    }
+    const fbResp = await scheduleSmart({
+      pageId,
+      accessToken,
+      message: caption || '',
+     // imageUrl: content.mediaUrl || null,
+      scheduledAt: dt,
+    });
 
-    const payload = {
-      imageUrl: content.mediaUrl || null,
+
+    const saved = await saveScheduledPost({
+      imageUrl:  null, //content.mediaUrl || null,
       caption: caption || null,
       facebookAccessToken: accessToken,
       pageId,
-      status: scheduledAt ? 'SCHEDULED' : 'DRAFT',
-      scheduledAt,
-    };
-
-    const saved = await saveScheduledPost(payload);
-
-    // Return a trimmed response (avoid echoing token)
-    return res.json({
-      id: saved.id,
-      pageId: saved.pageId,
-      status: saved.status,
-      scheduledAt: saved.scheduledAt,
-      createdAt: saved.createdAt,
-      imageUrl: saved.imageUrl,
-      caption: saved.caption,
+      status: 'SCHEDULED',
+      scheduledAt: dt,
+      fbPostId: fbResp.id || null,
     });
+return res.json({
+      message: 'Scheduled on Facebook and saved to SQL.',
+      facebook: { id: fbResp.id },
+      dbRecord: {
+        id: saved.id,
+        status: saved.status,
+        scheduledAt: saved.scheduledAt,
+        createdAt: saved.createdAt,
+        imageUrl: saved.imageUrl,
+        caption: saved.caption,
+        pageId: saved.pageId,
+      },
+    });
+
   } catch (err) {
-    console.error('schedule-post error:', err);
-    return res.status(500).json({ error: 'Failed to save scheduled post: ' + err.message });
+    console.error('schedule-post error:', err?.response?.data || err.message);
+    // Try to save as FAILED if we can
+    try {
+      const { accessToken, pageId, content, scheduleTime } = req.body || {};
+      if (accessToken && pageId && content) {
+        await saveScheduledPost({
+          imageUrl: null , //content.mediaUrl || null,
+          caption: [content.text, content.hashtags].filter(Boolean).join('\n\n') || null,
+          facebookAccessToken: accessToken,
+          pageId,
+          status: 'FAILED',
+          scheduledAt: scheduleTime ? new Date(scheduleTime) : null,
+          errorReason: err?.response?.data?.error?.message || err.message,
+        });
+      }
+    } catch (_) {}
+    return res.status(500).json({ error: 'Failed to schedule post: ' + (err?.response?.data?.error?.message || err.message) });
   }
 });
 
@@ -82,14 +110,21 @@ router.post('/post-to-facebook', async (req, res) => {
     if (!accessToken || !pageId) {
       return res.status(400).json({ error: 'Page access token and Page ID are required.' });
     }
-    if (!content || (!content.text && !content.mediaUrl)) {
+    if (!content || (!content.text  )) { //&& !content.mediaUrl
       return res.status(400).json({ error: 'Content with text or mediaUrl is required.' });
     }
 
     const caption = [content.text, content.hashtags].filter(Boolean).join('\n\n');
 
+    const fbResp = await postNowSmart({
+      pageId,
+      accessToken,
+      message: caption || '',
+    //  imageUrl: null,
+    });
+
     const saved = await saveImmediatePost({
-      imageUrl: content.mediaUrl || null,
+      imageUrl: null,
       caption: caption || null,
       facebookAccessToken: accessToken,
       pageId,
@@ -98,7 +133,7 @@ router.post('/post-to-facebook', async (req, res) => {
     });
 
     return res.json({
-      message: 'Saved to SQL as POSTED (save-only).',
+      message: 'Posted to Facebook and Saved to SQL .',
       dbRecord: {
         id: saved.id,
         status: saved.status,
@@ -109,9 +144,23 @@ router.post('/post-to-facebook', async (req, res) => {
         pageId: saved.pageId,
       },
     });
-  } catch (err) {
-    console.error('post-to-facebook save-only error:', err);
-    return res.status(500).json({ error: 'Failed to save immediate post: ' + err.message });
+  }  catch (err) {
+    console.error('post-to-facebook error:', err?.response?.data || err.message);
+    // Try to save as FAILED if we can
+    try {
+      const { accessToken, pageId, content } = req.body || {};
+      if (accessToken && pageId && content) {
+        await saveImmediatePost({
+          imageUrl: content.mediaUrl || null,
+          caption: [content.text, content.hashtags].filter(Boolean).join('\n\n') || null,
+          facebookAccessToken: accessToken,
+          pageId,
+          status: 'FAILED',
+          errorReason: err?.response?.data?.error?.message || err.message,
+        });
+      }
+    } catch (_) {}
+    return res.status(500).json({ error: 'Failed to post to Facebook: ' + (err?.response?.data?.error?.message || err.message) });
   }
 });
 
