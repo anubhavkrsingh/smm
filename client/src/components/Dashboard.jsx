@@ -5,18 +5,30 @@ function Dashboard() {
   const [isPopupOpen, setIsPopupOpen] = useState(false);
   const [selectedPlatform, setSelectedPlatform] = useState("facebook"); // default
   const [prompt, setPrompt] = useState("");
-  const [generatedContents, setGeneratedContents] = useState([]); // array of { text, hashtags, mediaUrl?, mediaType?, mediaDescription? }
-  const [selectedContent, setSelectedContent] = useState(null);
+  const [generatedContents, setGeneratedContents] = useState([]); // array of { text, hashtags, mediaUrl?, mediaType?, mediaDescription?, topic?, variant? }
+  // NEW: per-topic selection & scheduling
+  const [selectedByTopic, setSelectedByTopic] = useState({});   // { [topic]: contentObj }
+  const [scheduleByTopic, setScheduleByTopic] = useState({});   // { [topic]: "YYYY-MM-DDTHH:mm" }
+  const [loadingByTopic, setLoadingByTopic] = useState({});     // { [topic]: boolean }
   const [isAuthenticated, setIsAuthenticated] = useState(false); // based on localStorage creds
-  const [isLoading, setIsLoading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
-  const [scheduleTime, setScheduleTime] = useState("");
 
   // --- Helpers ---
   const getFbCreds = () => {
     const accessToken = localStorage.getItem("fb_page_access_token") || "";
     const pageId = localStorage.getItem("fb_page_id") || "";
     return { accessToken, pageId };
+  };
+
+  // Group contents by topic
+  const groupByTopic = (items) => {
+    return items.reduce((acc, item) => {
+      const topic = (item.topic && String(item.topic).trim()) || "General";
+      if (!acc[topic]) acc[topic] = [];
+      acc[topic].push(item);
+      return acc;
+    }, {});
   };
 
   // On mount, mark connected if creds exist
@@ -38,10 +50,12 @@ function Dashboard() {
       return;
     }
 
-    setIsLoading(true);
+    setIsGenerating(true);
     setError(null);
     setGeneratedContents([]);
-    setSelectedContent(null);
+    setSelectedByTopic({});
+    setScheduleByTopic({});
+    setLoadingByTopic({});
 
     try {
       const response = await fetch("http://localhost:5000/api/generate-content", {
@@ -56,19 +70,21 @@ function Dashboard() {
       }
 
       const data = await response.json();
-      // expecting array of objects; adjust if your service returns differently
-      setGeneratedContents(Array.isArray(data) ? data : [data]);
+      const arr = Array.isArray(data) ? data : [data];
+      setGeneratedContents(arr);
     } catch (err) {
       setError("Error generating content: " + err.message);
     } finally {
-      setIsLoading(false);
+      setIsGenerating(false);
     }
   };
 
-  // OPTIONAL: Post now (if you keep the immediate publish route)
-  const handlePostNow = async () => {
+  // Post NOW for a specific topic (uses that topic's selected card)
+  const handlePostNow = async (topic) => {
+    const selectedContent = selectedByTopic[topic];
     if (!selectedContent) return;
-    setIsLoading(true);
+
+    setLoadingByTopic((prev) => ({ ...prev, [topic]: true }));
     setError(null);
 
     try {
@@ -90,26 +106,33 @@ function Dashboard() {
         throw new Error(errorData.error || "Failed to post to Facebook");
       }
 
-      //alert("Post successfully published to Facebook!");
       const result = await response.json();
       alert(
         `Saved to SQL as ${result?.dbRecord?.status || "POSTED"} at ${new Date(
           result?.dbRecord?.scheduledAt || Date.now()
         ).toLocaleString()}`
       );
-      setGeneratedContents([]);
-      setSelectedContent(null);
+
+      // Optional: clear only this topic's selection after posting
+      setSelectedByTopic((prev) => {
+        const copy = { ...prev };
+        delete copy[topic];
+        return copy;
+      });
     } catch (err) {
       setError("Error posting to Facebook: " + err.message);
     } finally {
-      setIsLoading(false);
+      setLoadingByTopic((prev) => ({ ...prev, [topic]: false }));
     }
   };
 
-  // Schedule post: send to backend to SAVE in SQL (no FB publish here)
-  const handleSchedulePost = async () => {
+  // Schedule for a specific topic (uses that topic's selected card)
+  const handleSchedulePost = async (topic) => {
+    const selectedContent = selectedByTopic[topic];
+    const scheduleTime = scheduleByTopic[topic];
     if (!selectedContent || !scheduleTime) return;
-    setIsLoading(true);
+
+    setLoadingByTopic((prev) => ({ ...prev, [topic]: true }));
     setError(null);
 
     try {
@@ -133,18 +156,28 @@ function Dashboard() {
       }
 
       const saved = await response.json();
-      alert(
-        `Saved to SQL as ${saved.status} for ${new Date(saved.scheduledAt).toLocaleString()}`
-      );
-      setGeneratedContents([]);
-      setSelectedContent(null);
-      setScheduleTime("");
+      alert(`Saved to SQL as ${saved.status} for ${new Date(saved.scheduledAt).toLocaleString()}`);
+
+      // Optional: clear just this topic's selection/time after scheduling
+      setSelectedByTopic((prev) => {
+        const copy = { ...prev };
+        delete copy[topic];
+        return copy;
+      });
+      setScheduleByTopic((prev) => {
+        const copy = { ...prev };
+        delete copy[topic];
+        return copy;
+      });
     } catch (err) {
       setError("Error scheduling post: " + err.message);
     } finally {
-      setIsLoading(false);
+      setLoadingByTopic((prev) => ({ ...prev, [topic]: false }));
     }
   };
+
+  const grouped = groupByTopic(generatedContents);
+  const topicNames = Object.keys(grouped);
 
   return (
     <div className="flex min-h-screen bg-black text-white">
@@ -157,28 +190,17 @@ function Dashboard() {
             className="p-2 text-white rounded hover:bg-gray-700"
             title="Connect Facebook"
           >
-            <svg
-              className="w-6 h-6"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
               <path d="M9.198 21.5h4v-8.01h3.604l.54-3.98H13.8v-2.53c0-1.15.325-1.94 2-1.94h2.14V1.5h-3.46c-3.22 0-5.48 1.92-5.48 5.44v3.06H6.5v3.98h2.698V21.5z" />
             </svg>
           </button>
 
-          {/* placeholders for future platforms */}
           <button
             onClick={() => handleConnectPlatform("instagram")}
             className="p-2 text-white rounded hover:bg-gray-700"
             title="Connect Instagram"
           >
-            <svg
-              className="w-6 h-6"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
               <path d="M12 2.16c3.21 0 3.58.01 4.84.07 1.17.05 1.8.24 2.22.4.56.22.97.48 1.39.9.42.42.68.83.9 1.39.16.42.35 1.05.4 2.22.06 1.26.07 1.63.07 4.84s-.01 3.58-.07 4.84c-.05 1.17-.24 1.8-.4 2.22-.22.56-.48.97-.9 1.39-.42.42-.83.68-1.39.9-.42.16-1.05.35-2.22.4-1.26.06-1.63.07-4.84.07s-3.58-.01-4.84-.07c-1.17-.05-1.8-.24-2.22-.4-.56-.22-.97-.48-1.39-.9-.42-.42-.68-.83-.9-1.39-.16-.42-.35-1.05-.4-2.22-.06-1.26-.07-1.63-.07-4.84s.01-3.58.07-4.84c.05-1.17.24-1.8.4-2.22.22-.56.48-.97.9-1.39.42-.42.83-.68 1.39-.9.42-.16 1.05-.35 2.22-.4 1.26-.06 1.63-.07 4.84-.07zm0-2.16C8.74 0 8.33.01 7.05.07 5.78.13 4.76.36 3.92.67c-.86.32-1.59.74-2.32 1.47S.58 3.88.26 4.74c-.31.84-.54 1.86-.6 3.13C-.01 8.33 0 8.74 0 12s.01 3.67.07 4.94c.06 1.27.29 2.29.6 3.13.32.86.74 1.59 1.47 2.32s1.46 1.15 2.32 1.47c.84.31 1.86.54 3.13.6 1.27.06 1.68.07 4.94.07s3.67-.01 4.94-.07c1.27-.06 2.29-.29 3.13-.6.86-.32 1.59-.74 2.32-1.47s1.15-1.46 1.47-2.32c.31-.84.54-1.86.6-3.13.06-1.27.07-1.68.07-4.94s-.01-3.67-.07-4.94c-.06-1.27-.29-2.29-.6-3.13-.32-.86-.74-1.59-1.47-2.32s-1.46-1.15-2.32-1.47c-.84-.31-1.86-.54-3.13-.6C15.67-.01 15.26 0 12 0z" />
               <path d="M12 5.84a6.16 6.16 0 100 12.32 6.16 6.16 0 000-12.32zm0 10.16a4 4 0 110-8 4 4 0 010 8z" />
               <circle cx="18.41" cy="5.59" r="1.44" />
@@ -190,12 +212,7 @@ function Dashboard() {
             className="p-2 text-white rounded hover:bg-gray-700"
             title="Connect LinkedIn"
           >
-            <svg
-              className="w-6 h-6"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
               <path d="M4.98 3.5c0 1.38-1.12 2.5-2.5 2.5S0 4.88 0 3.5 1.12 1 2.5 1s2.5 1.12 2.5 2.5zm.02 4.5h-5v16h5v-16zm7.98 0h-5v16h5v-6.5c0-2.48 2.02-4.5 4.5-4.5s4.5 2.02 4.5 4.5v6.5h5v-8.5c0-4.97-4.03-9-9-9-2.13 0-4.08.74-5.63 1.97l-.37-.47h-.5v16z" />
             </svg>
           </button>
@@ -205,19 +222,8 @@ function Dashboard() {
             onClick={() => alert("View History")}
             title="History"
           >
-            <svg
-              className="w-6 h-6"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
         </nav>
@@ -245,83 +251,117 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Generated Content Preview */}
-        {generatedContents.length > 0 && (
-          <div className="mb-6 p-6 bg-gray-900 rounded-lg shadow-lg max-w-[90vw] mx-auto border border-gray-700">
-            <h2 className="text-xl font-bold mb-4">Generated Post Previews</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {generatedContents.map((content, index) => (
+        {/* Generated Content Preview — grouped by topic */}
+        {topicNames.length > 0 && (
+          <div className="mb-6 space-y-8 max-w-[90vw] mx-auto">
+            {topicNames.map((topic) => {
+              const items = grouped[topic];
+              const selected = selectedByTopic[topic] || null;
+              const scheduleTime = scheduleByTopic[topic] || "";
+              const isLoading = !!loadingByTopic[topic];
+
+              return (
                 <div
-                  key={index}
-                  className={`p-4 bg-gray-800 rounded-lg cursor-pointer border ${selectedContent === content ? "border-blue-500" : "border-gray-700"
-                    }`}
-                  onClick={() => setSelectedContent(content)}
+                  key={topic}
+                  className="p-6 bg-gray-900 rounded-lg shadow-lg border border-gray-700"
                 >
-                  <p className="mb-2 whitespace-pre-wrap">{content.text}</p>
-                  <p className="mb-2 text-blue-400">{content.hashtags}</p>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-bold">
+                      Topic: <span className="text-blue-400">{topic}</span>
+                    </h2>
+                    <span className="text-sm text-gray-400">
+                      {items.length} option{items.length > 1 ? "s" : ""}
+                    </span>
+                  </div>
 
-                  {content.mediaUrl && (
-                    <div className="mb-2">
-                      {content.mediaType === "image" ? (
-                        <img
-                          src={content.mediaUrl}
-                          alt={`Generated Media ${index + 1}`}
-                          className="max-w-full h-auto rounded-lg"
-                          onError={() =>
-                            setError(`Failed to load media for option ${index + 1}`)
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {items.map((content, index) => (
+                      <div
+                        key={`${topic}-${index}`}
+                        className={`p-4 bg-gray-800 rounded-lg cursor-pointer border ${
+                          selected === content ? "border-blue-500" : "border-gray-700"
+                        }`}
+                        onClick={() =>
+                          setSelectedByTopic((prev) => ({ ...prev, [topic]: content }))
+                        }
+                      >
+                        {/* Optional: show variant */}
+                        {content.variant && (
+                          <p className="text-xs text-gray-400 mb-2">Variant {content.variant}</p>
+                        )}
+
+                        <p className="mb-2 whitespace-pre-wrap">{content.text}</p>
+                        <p className="mb-2 text-blue-400">{content.hashtags}</p>
+
+                        {content.mediaUrl && (
+                          <div className="mb-2">
+                            {content.mediaType === "image" ? (
+                              <img
+                                src={content.mediaUrl}
+                                alt={`Generated Media ${index + 1}`}
+                                className="max-w-full h-auto rounded-lg"
+                                onError={() =>
+                                  setError(`Failed to load media for ${topic} option ${index + 1}`)
+                                }
+                              />
+                            ) : (
+                              <video
+                                src={content.mediaUrl}
+                                controls
+                                className="max-w-full h-auto rounded-lg"
+                                onError={() =>
+                                  setError(`Failed to load media for ${topic} option ${index + 1}`)
+                                }
+                              />
+                            )}
+                          </div>
+                        )}
+                        <p className="text-gray-400 text-sm">{content.mediaDescription}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Per-topic actions */}
+                  <div className="mt-4 flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-4 items-center">
+                      <button
+                        onClick={() => handlePostNow(topic)}
+                        disabled={isLoading || !selected}
+                        className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 disabled:bg-gray-500"
+                      >
+                        {isLoading ? "Posting..." : "Post Selected Now"}
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="datetime-local"
+                          value={scheduleTime}
+                          onChange={(e) =>
+                            setScheduleByTopic((prev) => ({
+                              ...prev,
+                              [topic]: e.target.value,
+                            }))
                           }
+                          className="p-2 bg-gray-800 text-white rounded-lg"
                         />
-                      ) : (
-                        <video
-                          src={content.mediaUrl}
-                          controls
-                          className="max-w-full h-auto rounded-lg"
-                          onError={() =>
-                            setError(`Failed to load media for option ${index + 1}`)
-                          }
-                        />
-                      )}
+                        <button
+                          onClick={() => handleSchedulePost(topic)}
+                          disabled={isLoading || !selected || !scheduleTime}
+                          className="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700 disabled:bg-gray-500"
+                        >
+                          {isLoading ? "Scheduling..." : "Schedule Selected Post"}
+                        </button>
+                      </div>
                     </div>
-                  )}
-                  <p className="text-gray-400 text-sm">{content.mediaDescription}</p>
-                </div>
-              ))}
-            </div>
 
-            {selectedContent && (
-              <div className="mt-4 flex flex-col gap-3">
-                <div className="flex gap-4">
-                  <button
-                    onClick={handlePostNow}
-                    disabled={isLoading}
-                    className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 disabled:bg-gray-500"
-                  >
-                    {isLoading ? "Posting..." : "Post Selected Now"}
-                  </button>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="datetime-local"
-                      value={scheduleTime}
-                      onChange={(e) => setScheduleTime(e.target.value)}
-                      className="p-2 bg-gray-800 text-white rounded-lg"
-                    />
-                    <button
-                      onClick={handleSchedulePost}
-                      disabled={isLoading || !scheduleTime}
-                      className="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700 disabled:bg-gray-500"
-                    >
-                      {isLoading ? "Scheduling..." : "Schedule Selected Post"}
-                    </button>
+                    <p className="text-xs text-gray-400">
+                      Tip: Select an option inside this topic. Actions here affect only{" "}
+                      <span className="font-semibold">{topic}</span>.
+                    </p>
                   </div>
                 </div>
-
-                <p className="text-xs text-gray-400">
-                  Tip: Click a card to select it. Schedule stores the post in SQL as
-                  <span className="px-1 font-semibold"> SCHEDULED</span> with your chosen time.
-                </p>
-              </div>
-            )}
+              );
+            })}
           </div>
         )}
 
@@ -333,7 +373,12 @@ function Dashboard() {
             <textarea
               className="w-full p-3 bg-gray-800 text-white rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
               rows="3"
-              placeholder="Enter your prompt here (e.g., 'Generate a happy Diwali wishing pic with caption and hashtags')..."
+              placeholder="Enter your prompt (you can list multiple topics e.g.:
+Generate post on these:
+1 Happy Diwali
+2 Chhath Puja
+3 Happy New Year
+)..."
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
@@ -346,9 +391,9 @@ function Dashboard() {
             <button
               className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:bg-gray-500"
               onClick={handlePromptSubmit}
-              disabled={isLoading || !prompt.trim()}
+              disabled={isGenerating || !prompt.trim()}
             >
-              {isLoading ? (
+              {isGenerating ? (
                 "Generating..."
               ) : (
                 <svg
@@ -356,14 +401,8 @@ function Dashboard() {
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
-                  xmlns="http://www.w3.org/2000/svg"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               )}
             </button>
